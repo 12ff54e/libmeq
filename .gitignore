@@ -1,0 +1,8 @@
+.vscode
+build
+data
+spdata.dat
+
+tags
+*.swp
+*.swo
