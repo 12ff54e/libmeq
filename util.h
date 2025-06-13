@@ -62,7 +62,7 @@ constexpr auto abs(T x) {
 namespace detail {
 
 template <typename Func, typename Tx, typename Tf>
-void bracket(Func& func, Tx& a, Tx& b, Tx c, Tf& fa, Tf& fb, Tf& d, Tf& fd) {
+void bracket(Func& func, Tx& a, Tx& b, Tx c, Tf& fa, Tf& fb, Tx& d, Tf& fd) {
     Tf tol = std::numeric_limits<Tf>::epsilon() * 2;
 
     if ((b - a) < 2 * tol * a) {

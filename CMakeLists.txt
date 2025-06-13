@@ -19,8 +19,8 @@ endif()
 
 add_compile_definitions($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:_DEBUG>)
 
-list(APPEND lib_src_files Contour.cpp GFileRawData.cpp MagneticEquilibrium.cpp)
-add_library(meq ${lib_src_files})
+add_library(meq INTERFACE)
+target_include_directories(meq INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
 list(APPEND tests vec-test util-test poly-test bigint-test zernike-test)
 list(LENGTH tests test_num)
