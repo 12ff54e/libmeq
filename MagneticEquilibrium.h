@@ -1,6 +1,7 @@
 #ifndef MEQ_MAGNETIC_EQUILIBRIUM_H
 #define MEQ_MAGNETIC_EQUILIBRIUM_H
 
+#include "BSplineInterpolation/src/include/DedicatedThreadPool.hpp"
 #include "BSplineInterpolation/src/include/Interpolation.hpp"
 #include "Contour.h"
 #include "GFileRawData.h"
@@ -97,7 +98,7 @@ class MagneticEquilibrium {
         }
 
         auto& timer = Timer::get_timer();
-        timer.start("Create Boozer grid");
+        timer.start(" - Bspline of flux");
         const val_type left_bd = gfile_data.r_left;
         const val_type right_bd = gfile_data.r_left + gfile_data.dim.x();
         const val_type top_bd = gfile_data.z_mid + .5 * gfile_data.dim.y();
@@ -140,17 +141,34 @@ class MagneticEquilibrium {
         }
         psi_delta_ = psi_wall / static_cast<val_type>(lsp - 1);
 
+        auto& thread_pool = intp::DedicatedThreadPool<void>::get_instance(4);
+
+        timer.pause_last_and_start_next(" - Contour");
         // contours are from \\Delta\\psi to LCFS
-        std::vector<Contour<val_type>> contours;
-        contours.reserve(radial_sample);
-        for (std::size_t i = 0; i < radial_sample; ++i) {
-            contours.emplace_back(
-                util::lerp(psi_delta_, psi_wall,
-                           static_cast<val_type>(i) /
-                               static_cast<val_type>(radial_sample - 1)) +
-                    psi_ma_intp,
-                flux_function, gfile_data);
+        std::vector<Contour<val_type>> contours(radial_sample);
+        std::vector<std::future<void>> tasks;
+        constexpr std::size_t task_size = 8;
+        for (std::size_t i = 0; i < (radial_sample + task_size - 1) / task_size;
+             ++i) {
+            const auto start = i * task_size;
+            const auto finish = start + task_size > radial_sample
+                                    ? radial_sample
+                                    : start + task_size;
+            auto construct_contour = [&, start, finish]() {
+                for (std::size_t li = start; li < finish; ++li) {
+                    contours[li] = Contour<val_type>(
+                        util::lerp(
+                            psi_delta_, psi_wall,
+                            static_cast<val_type>(li) /
+                                static_cast<val_type>(radial_sample - 1)) +
+                            psi_ma_intp,
+                        flux_function, gfile_data);
+                }
+            };
+            tasks.push_back(thread_pool.queue_task(construct_contour));
         }
+        for (auto& res : tasks) { res.get(); }
+        timer.pause_last_and_start_next(" - Boozer grid");
 
         constexpr val_type magnetic_constant = 4.e-7 * M_PI;
 
@@ -229,14 +247,13 @@ class MagneticEquilibrium {
         intp::Mesh<val_type, 2> z_boozer(radial_sample, lst + 1);
         intp::Mesh<val_type, 2> jacobian_boozer(radial_sample, lst + 1);
 
-        std::vector<val_type> safety_factor, pol_current_n, tor_current_n,
-            pressure_n, r_minor_n, tor_flux_n;
+        std::vector<val_type> safety_factor(radial_sample);
+        std::vector<val_type> pol_current_n(radial_sample);
+        std::vector<val_type> tor_current_n(radial_sample);
+        std::vector<val_type> pressure_n(radial_sample);
+        std::vector<val_type> r_minor_n(radial_sample);
 
-        safety_factor.reserve(radial_sample);
-        pol_current_n.reserve(radial_sample);
-        tor_current_n.reserve(radial_sample);
-        pressure_n.reserve(radial_sample);
-        r_minor_n.reserve(radial_sample);
+        std::vector<val_type> tor_flux_n;
         tor_flux_n.reserve(radial_sample);
 
         const val_type B0 = b_field(gfile_data.magnetic_axis, 0.);
@@ -261,84 +278,109 @@ class MagneticEquilibrium {
     X(b2j);           \
     X(bp2j)
 
-        for (std::size_t ri = 0; ri < contours.size(); ++ri) {
-            const val_type psi = contours[ri].flux() - psi_ma_intp;
-            const std::size_t poloidal_size = contours[ri].size() + 1;
+        tasks.clear();
+        for (std::size_t ri = 0;
+             ri < (contours.size() + task_size - 1) / task_size; ++ri) {
+            const auto start = ri * task_size;
+            const auto finish = start + task_size > contours.size()
+                                    ? contours.size()
+                                    : start + task_size;
+            const auto construct_boozer = [&, start, finish]() {
+                for (std::size_t li = start; li < finish; ++li) {
+                    const val_type psi = contours[li].flux() - psi_ma_intp;
+                    const std::size_t poloidal_size = contours[li].size() + 1;
 #define X(name)                       \
     std::vector<val_type> name##_geo; \
     name##_geo.reserve(poloidal_size)
-            boozer_list();
+                    boozer_list();
 #undef X
 
-            // quantities on geometric grid
-            for (size_t i = 0; i < poloidal_size; ++i) {
-                const auto& pt = contours[ri][i % (poloidal_size - 1)];
-                r_geo.push_back(pt.x());
-                z_geo.push_back(pt.y());
-                b2j_geo.push_back(b2j_field(pt, psi));
-                bp2j_geo.push_back(bp2j_field(pt, psi));
-            }
-            // interpolation on geometric grid
+                    // quantities on geometric grid
+                    for (size_t i = 0; i < poloidal_size; ++i) {
+                        const auto& pt = contours[li][i % (poloidal_size - 1)];
+                        r_geo.push_back(pt.x());
+                        z_geo.push_back(pt.y());
+                        b2j_geo.push_back(b2j_field(pt, psi));
+                        bp2j_geo.push_back(bp2j_field(pt, psi));
+                    }
+                    // interpolation on geometric grid
 #define X(name)            \
     auto name##_geo_intp = \
         poloidal_template.interpolate(intp::util::get_range(name##_geo))
-            boozer_list();
+                    boozer_list();
 #undef X
 
-            // integrate
+                    // integrate
 
-            std::vector<val_type> b2j_int;
-            b2j_int.reserve(poloidal_angles.size());
-            b2j_int.push_back(0);
+                    std::vector<val_type> b2j_int;
+                    b2j_int.reserve(poloidal_angles.size());
+                    b2j_int.push_back(0);
 
-            std::vector<val_type> bp2j_int;
-            bp2j_int.reserve(poloidal_angles.size());
-            bp2j_int.push_back(0);
+                    std::vector<val_type> bp2j_int;
+                    bp2j_int.reserve(poloidal_angles.size());
+                    bp2j_int.push_back(0);
 
-            // Poloidal grid begins from \\theta = 0 and ends at \\theta = 2\\pi
-            for (size_t i = 1; i < poloidal_angles.size(); ++i) {
-                b2j_int.push_back(b2j_int.back() +
-                                  util::integrate_coarse(b2j_geo_intp,
-                                                         poloidal_angles[i - 1],
-                                                         poloidal_angles[i]));
-                bp2j_int.push_back(bp2j_int.back() + util::integrate_coarse(
-                                                         bp2j_geo_intp,
-                                                         poloidal_angles[i - 1],
-                                                         poloidal_angles[i]));
-            }
-            const auto b2j_flux_avg = b2j_int.back() / PI2;
-            tor_current_n.push_back(bp2j_int.back() / (PI2 * current_unit));
-            // normalization
-            for (auto& v : b2j_int) { v /= b2j_flux_avg; }
-            auto boozer_geo_intp = poloidal_template_full.interpolate(
-                intp::util::get_range(b2j_int));
+                    // Poloidal grid begins from \\theta = 0 and ends at \\theta
+                    // = 2\\pi
+                    for (size_t i = 1; i < poloidal_angles.size(); ++i) {
+                        b2j_int.push_back(
+                            b2j_int.back() +
+                            util::integrate_coarse(b2j_geo_intp,
+                                                   poloidal_angles[i - 1],
+                                                   poloidal_angles[i]));
+                        bp2j_int.push_back(
+                            bp2j_int.back() +
+                            util::integrate_coarse(bp2j_geo_intp,
+                                                   poloidal_angles[i - 1],
+                                                   poloidal_angles[i]));
+                    }
+                    const auto b2j_flux_avg = b2j_int.back() / PI2;
+                    tor_current_n[li] = bp2j_int.back() / (PI2 * current_unit);
+                    // normalization
+                    for (auto& v : b2j_int) { v /= b2j_flux_avg; }
+                    auto boozer_geo_intp = poloidal_template_full.interpolate(
+                        intp::util::get_range(b2j_int));
 
-            // calculate necessary values on a even-spaced boozer grid
-            for (size_t i = 0; i <= lst; ++i) {
-                const auto theta_boozer =
-                    (static_cast<val_type>(i % lst) + .5) * theta_delta_;
-                auto theta_geo = util::find_root(
-                    [&](val_type t) {
-                        return boozer_geo_intp(t) - theta_boozer;
-                    },
-                    val_type{}, PI2);
-                auto r_grid = r_geo_intp(theta_geo);
-                auto z_grid = z_geo_intp(theta_geo);
+                    // calculate necessary values on a even-spaced boozer grid
+                    for (size_t i = 0; i <= lst; ++i) {
+                        const auto theta_boozer =
+                            (static_cast<val_type>(i % lst) + .5) *
+                            theta_delta_;
+                        auto theta_geo = util::find_root(
+                            [&](val_type t) {
+                                return boozer_geo_intp(t) - theta_boozer;
+                            },
+                            val_type{}, PI2);
+                        auto r_grid = r_geo_intp(theta_geo);
+                        auto z_grid = z_geo_intp(theta_geo);
 
-                // be careful of normalization
-                const auto b = b_field({r_grid, z_grid}, psi);
-                magnetic_boozer(ri, i) = b / magnetic_field_unit;
-                r_boozer(ri, i) = r_grid / length_unit;
-                // z value is shifted such that magnetic axis has z = 0
-                z_boozer(ri, i) =
-                    (z_grid - gfile_data.magnetic_axis.y()) / length_unit;
-                jacobian_boozer(ri, i) =
-                    b2j_flux_avg / (b * b) * magnetic_field_unit / length_unit;
-            }
+                        // be careful of normalization
+                        const auto b = b_field({r_grid, z_grid}, psi);
+                        magnetic_boozer(li, i) = b / magnetic_field_unit;
+                        r_boozer(li, i) = r_grid / length_unit;
+                        // z value is shifted such that magnetic axis has z = 0
+                        z_boozer(li, i) =
+                            (z_grid - gfile_data.magnetic_axis.y()) /
+                            length_unit;
+                        jacobian_boozer(li, i) = b2j_flux_avg / (b * b) *
+                                                 magnetic_field_unit /
+                                                 length_unit;
+                    }
 
-            safety_factor.push_back(safety_factor_intp(psi));
-            pol_current_n.push_back(poloidal_current_intp(psi) / current_unit);
-            pressure_n.push_back(pressure_intp(psi) / pressure_unit);
+                    safety_factor[li] = safety_factor_intp(psi);
+                    pol_current_n[li] =
+                        poloidal_current_intp(psi) / current_unit;
+                    pressure_n[li] = pressure_intp(psi) / pressure_unit;
+                    // r_minor defined as distance from magnetic axis at weak
+                    // field side this value is always normalized to R0
+                    r_minor_n[li] = r_geo_intp(0.) / R0 - 1.;
+                }
+            };
+            tasks.push_back(thread_pool.queue_task(construct_boozer));
+        }
+
+        for (std::size_t ri = 0; ri < contours.size(); ++ri) {
+            const val_type psi = contours[ri].flux() - psi_ma_intp;
             tor_flux_n.push_back(
                 (ri == 0 ? 0. : tor_flux_n.back()) +
                 util::integrate_coarse(
@@ -347,11 +389,8 @@ class MagneticEquilibrium {
                         ri == 0 ? 0. : (contours[ri - 1].flux() - psi_ma_intp)),
                     psi) /
                     flux_unit);
-            // r_minor defined as distance from magnetic axis at weak field side
-            // this value is always normalized to R0
-            r_minor_n.push_back(r_geo_intp(0.) / R0 - 1.);
         }
-
+        for (auto& res : tasks) { res.get(); }
         timer.pause();
 
         // psi_delta_ is normalized after flux surface is fully constructed, and
