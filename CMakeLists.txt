@@ -19,8 +19,15 @@ endif()
 
 add_compile_definitions($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:_DEBUG>)
 
+option(MEQ_ENABLE_MULTITHREAD "Enable multitheading with a posix thread pool" OFF)
+if(MEQ_ENABLE_MULTITHREAD)
+    message(STATUS)
+    message(STATUS "Enable multithreading for libmeq")
+endif()
+
 add_library(meq INTERFACE)
 target_include_directories(meq INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(meq INTERFACE $<$<BOOL:${MEQ_ENABLE_MULTITHREAD}>:MEQ_MULTITHREAD>)
 
 list(APPEND tests vec-test util-test poly-test bigint-test zernike-test)
 list(LENGTH tests test_num)

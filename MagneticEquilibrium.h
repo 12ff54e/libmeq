@@ -141,12 +141,13 @@ class MagneticEquilibrium {
         }
         psi_delta_ = psi_wall / static_cast<val_type>(lsp - 1);
 
+#ifdef MEQ_MULTITHREAD
         auto& thread_pool = intp::DedicatedThreadPool<void>::get_instance(4);
-
+        std::vector<std::future<void>> tasks;
+#endif
         timer.pause_last_and_start_next(" - Contour");
         // contours are from \\Delta\\psi to LCFS
         std::vector<Contour<val_type>> contours(radial_sample);
-        std::vector<std::future<void>> tasks;
         constexpr std::size_t task_size = 8;
         for (std::size_t i = 0; i < (radial_sample + task_size - 1) / task_size;
              ++i) {
@@ -165,9 +166,16 @@ class MagneticEquilibrium {
                         flux_function, gfile_data);
                 }
             };
+#ifdef MEQ_MULTITHREAD
             tasks.push_back(thread_pool.queue_task(construct_contour));
+#else
+            construct_contour();
+#endif
         }
+#ifdef MEQ_MULTITHREAD
         for (auto& res : tasks) { res.get(); }
+        tasks.clear();
+#endif
         timer.pause_last_and_start_next(" - Boozer grid");
 
         constexpr val_type magnetic_constant = 4.e-7 * M_PI;
@@ -278,7 +286,6 @@ class MagneticEquilibrium {
     X(b2j);           \
     X(bp2j)
 
-        tasks.clear();
         for (std::size_t ri = 0;
              ri < (contours.size() + task_size - 1) / task_size; ++ri) {
             const auto start = ri * task_size;
@@ -376,7 +383,11 @@ class MagneticEquilibrium {
                     r_minor_n[li] = r_geo_intp(0.) / R0 - 1.;
                 }
             };
+#ifdef MEQ_MULTITHREAD
             tasks.push_back(thread_pool.queue_task(construct_boozer));
+#else
+            construct_boozer();
+#endif
         }
 
         for (std::size_t ri = 0; ri < contours.size(); ++ri) {
@@ -390,7 +401,9 @@ class MagneticEquilibrium {
                     psi) /
                     flux_unit);
         }
+#ifdef MEQ_MULTITHREAD
         for (auto& res : tasks) { res.get(); }
+#endif
         timer.pause();
 
         // psi_delta_ is normalized after flux surface is fully constructed, and
