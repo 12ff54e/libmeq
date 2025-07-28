@@ -97,6 +97,16 @@ class MagneticEquilibrium {
                 "[MagneticEquilibrium] Radial sample point must be even.");
         }
 
+        std::cout << "Toroidal field direction (in cylindrical coordinate "
+                     "(X,Z,phi)):\n";
+        std::cout << "  Magnetic field: "
+                  << (gfile_data.f_pol.front() > 0 ? '+' : '-') << '\n';
+        std::cout << "  Current: "
+                  << (gfile_data.flux_LCFS > gfile_data.flux_magnetic_axis
+                          ? '+'
+                          : '-')
+                  << '\n';
+
         auto& timer = Timer::get_timer();
         timer.start(" - Bspline of flux");
         const val_type left_bd = gfile_data.r_left;

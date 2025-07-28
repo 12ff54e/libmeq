@@ -34,6 +34,7 @@ class Timer {
     std::vector<std::string> current_func_names;
 };
 
+#endif  // ZQ_TIMER
 #ifdef ZQ_TIMER_IMPLEMENTATION
 
 #include <iomanip>
@@ -121,4 +122,3 @@ Timer& Timer::get_timer() {
     return timer;
 }
 #endif  // ZQ_TIMER_IMPLEMENTATION
-#endif  // ZQ_TIMER
