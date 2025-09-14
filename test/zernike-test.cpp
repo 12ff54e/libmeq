@@ -39,7 +39,10 @@ int main() {
 
     constexpr std::size_t nr = 256;
     constexpr std::size_t nt = 256;
-    intp::Mesh<double, 2> val(nr, nt);
+    intp::Mesh<std::array<double, 3>, 2> val(nr, nt);
+
+    auto get_val = [&](int i, int j) { return val(i, j)[0]; };
+
     std::vector<double> rg(nr);
 
     auto& timer = Timer::get_timer();
@@ -54,15 +57,20 @@ int main() {
         for (std::size_t j = 0; j < nt; ++j) {
             const double theta = dt * static_cast<double>(j);
             // val = 3*Z(0，0) + Z(2,0) - 1.5*Z(2,2) + 2*Z(5,-3)
-            val(i, j) = 3. + (2. * r2 - 1.) - 1.5 * r2 * std::cos(2. * theta) +
-                        2. * r3 * (-4. + 5. * r2) * (std::sin(3. * theta));
+            val(i, j)[0] = 3. + (2. * r2 - 1.) -
+                           1.5 * r2 * std::cos(2. * theta) +
+                           2. * r3 * (-4. + 5. * r2) * std::sin(3. * theta);
+            val(i, j)[1] = 3. * r2 * std::sin(2. * theta) +
+                           6. * r3 * (-4. + 5. * r2) * std::cos(3. * theta);
+            val(i, j)[2] = 6. * r2 * std::cos(2. * theta) -
+                           18. * r3 * (-4. + 5. * r2) * std::sin(3. * theta);
         }
     }
 
     timer.pause_last_and_start_next("Series");
 
     constexpr int polar_order = 4;
-    Zernike::Series<double> zernike_series(polar_order, nr, nt, val, rg);
+    Zernike::Series<double> zernike_series(polar_order, nr, nt, get_val, rg);
 
     timer.pause();
     std::cout << "\nCoefficients of f = 3*Z(0，0) + Z(2,0) - 1.5*Z(2,2) + "
@@ -83,17 +91,27 @@ int main() {
     timer.start("Evaluate");
 
     diff = 0;
+    double diff_dt1 = 0.;
+    double diff_dt2 = 0.;
     for (std::size_t i = 0; i < nr; ++i) {
         const auto r = rg[i];
         for (std::size_t j = 0; j < nt; ++j) {
             const double theta = dt * static_cast<double>(j);
-            diff += std::pow(val(i, j) - zernike_series(r, theta), 2);
+            diff += std::pow(val(i, j)[0] - zernike_series(r, theta), 2);
+            diff_dt1 += std::pow(
+                val(i, j)[1] - zernike_series.theta_derivative(r, theta, 1), 2);
+            diff_dt2 += std::pow(
+                val(i, j)[2] - zernike_series.theta_derivative(r, theta, 2), 2);
         }
     }
 
     timer.pause();
-    std::cout << "Grid Size: " << nr << " * " << nt << '\n'
-              << "L2 Difference on Grid: " << std::sqrt(diff / nr * nt) << '\n';
+    std::cout << "Grid Size: " << nr << " * " << nt
+              << "\nL2 Difference on Grid:\n  value: "
+              << std::sqrt(diff / nr * nt)
+              << "\n  theta derivative 1: " << std::sqrt(diff_dt1 / nr * nt)
+              << "\n  theta derivative 2: " << std::sqrt(diff_dt2 / nr * nt)
+              << '\n';
 
     timer.print();
 

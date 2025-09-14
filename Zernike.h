@@ -115,6 +115,9 @@ struct Wrapper : public WrapperBase {
 
 }  // namespace
 
+// The definition of this function containes all the instantiations of templates
+// of radial zernike polynomials and it needs much time to compile, thus
+// hidden behind a stb style macro
 double radial_at(int n, int m, double r);
 
 template <typename T>
@@ -131,7 +134,7 @@ struct Series {
         const auto count = basic_cap(order) + 1;
         if (count != coef.size()) {
             std::cout << "[Zernike::Series] Specified order and the number of "
-                         "provided coefficients do not match each order.\n";
+                         "provided coefficients do not match each other.\n";
             if (count < coef.size()) {
                 std::cout << "[Zernike::Series] Coefficient list has "
                           << coef.size() << "elements and is truncted to "
@@ -236,6 +239,29 @@ struct Series {
             const auto [n, m] = basic_index_nm(l, order);
             f += coef[l] * radial_at(n, util::abs(m), r) *
                  trig_buffer[static_cast<std::size_t>(m + order)];
+        }
+        return f;
+    }
+
+    val_type theta_derivative(val_type r, val_type theta, int od) const {
+        val_type f{};
+        std::vector<val_type> trig_buffer(2 * order + 1);
+        for (int i = 0; i <= 2 * order; ++i) {
+            trig_buffer[static_cast<std::size_t>(i)] =
+                i < order ? std::sin((order - i) * theta)
+                          : std::cos((i - order) * theta);
+        }
+        for (int i = 0; i <= 2 * order; ++i) {
+            for (int d = 0; d < od; ++d) {
+                trig_buffer[static_cast<std::size_t>(i)] *=
+                    (d % 2 ? 1 : -1) * (order - i);
+            }
+        }
+        for (std::size_t l = 0; l < coef.size(); ++l) {
+            const auto [n, m] = basic_index_nm(l, order);
+            f += coef[l] * radial_at(n, util::abs(m), r) *
+                 trig_buffer[static_cast<std::size_t>((od % 2 ? -m : m) +
+                                                      order)];
         }
         return f;
     }
