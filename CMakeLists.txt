@@ -28,6 +28,7 @@ endif()
 add_library(meq INTERFACE)
 target_include_directories(meq INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(meq INTERFACE $<$<BOOL:${MEQ_ENABLE_MULTITHREAD}>:MEQ_MULTITHREAD>)
+target_compile_definitions(meq INTERFACE $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:INTP_DEBUG>)
 
 list(APPEND tests vec-test util-test poly-test bigint-test zernike-test)
 list(LENGTH tests test_num)
