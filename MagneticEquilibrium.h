@@ -1,6 +1,10 @@
 #ifndef MEQ_MAGNETIC_EQUILIBRIUM_H
 #define MEQ_MAGNETIC_EQUILIBRIUM_H
 
+#include <limits>
+#include <type_traits>
+#include <utility>
+
 #include "BSplineInterpolation/src/include/DedicatedThreadPool.hpp"
 #include "BSplineInterpolation/src/include/Interpolation.hpp"
 #include "Contour.h"
@@ -11,87 +15,92 @@
 #include "Zernike.h"
 #endif
 
-template <typename T>
+template <typename T, typename F1, typename F2>
 class MagneticEquilibrium {
    public:
     // interpolation order of internal use
     constexpr static std::size_t ORDER = 5;
-    constexpr static std::size_t ORDER_OUT = 2;
 
     using val_type = T;
 
-   protected:
-    static constexpr std::size_t FIELD_NUM_2D = 4;
-    static constexpr std::size_t FIELD_NUM_1D = 6;
-
-    // The contour mesh grid of data stored here, and the resolution should be
-    // higher than the output spec
-    struct MagneticEquilibriumRaw_ {
-        // - magnetic_field
-        // - r
-        // - z
-        // - jacobian
-        std::array<intp::Mesh<val_type, 2>, FIELD_NUM_2D> data_2d;
-        // - safety_factor
-        // - poloidal_current
-        // - toroidal_current
-        // - pressure
-        // - minor_radius
-        // - toroidal_flux
-        std::array<std::vector<val_type>, FIELD_NUM_1D> data_1d;
-
-        std::array<val_type, FIELD_NUM_2D> axis_value_2d;
-        std::array<val_type, FIELD_NUM_1D> axis_value_1d;
-
-        val_type flux_unit;
+    struct RawValues1D {
+        val_type psi;  // poloidal flux
+        val_type f;    // poloidal current
+        val_type q;    // safety factor
+        val_type p;    // pressure
+        val_type b2j;  // b^2 * jacobi
+    };
+    struct RawValues2D {
+        val_type dpdr;  // ... and its R derivative
+        val_type dpdz;  // ... also Z derivative
+        val_type r;     // major radius, i.e. R in cylindrical coord
+        val_type z;     // Z in cylindrical coord
     };
 
-    struct MagneticEquilibriumIntp_ {
-        std::vector<val_type> psi_sample_for_output;
+    // F should be type of a function accepting `RawValues1D` and `RawValues2D`
+    // (normalized, depends on `use_si_`), returning an array-like element
+    // containing all the field needed to be constructed on boozer coordinate
+    // grid (psi, theta)
+    using field_1d_func_type = F1;
+    using field_2d_func_type = F2;
 
-        // - magnetic_field
-        // - r
-        // - z
-        // - jacobian
-#ifdef MEQ_ZERNIKE_SERIES_
-        std::array<Zernike::Series<val_type>, FIELD_NUM_2D>
-#else
-        std::array<
-            intp::InterpolationFunction<val_type, 2, ORDER_OUT, val_type>,
-            FIELD_NUM_2D>
-#endif
-            intp_2d;
-        // - safety_factor
-        // - poloidal_current
-        // - toroidal_current
-        // - pressure
-        // - minor_radius
-        // - toroidal_flux
-        std::array<intp::InterpolationFunction1D<ORDER_OUT, val_type, val_type>,
-                   FIELD_NUM_1D>
-            intp_1d;
+    static constexpr std::size_t field_1d_num = std::tuple_size_v<
+        std::invoke_result_t<field_1d_func_type, RawValues1D>>;
+    static constexpr std::size_t field_2d_num = std::tuple_size_v<
+        std::invoke_result_t<field_2d_func_type, RawValues1D, RawValues2D>>;
 
-        template <typename F,
-                  std::size_t... indices_2d,
-                  std::size_t... indices_1d>
-        MagneticEquilibriumIntp_(const MagneticEquilibriumRaw_& spdata_raw,
-                                 const MagneticEquilibrium& spdata,
-                                 const F& generate_psi_for_output,
-                                 std::index_sequence<indices_2d...>,
-                                 std::index_sequence<indices_1d...>)
-            : psi_sample_for_output{generate_psi_for_output(spdata.psi_delta(),
-                                                            spdata.lsp)},
-              intp_2d{spdata.create_2d_spline_(spdata_raw.data_2d[indices_2d],
-                                               psi_sample_for_output)...},
-              intp_1d{spdata.create_1d_spline_(spdata_raw.data_1d[indices_1d],
-                                               psi_sample_for_output)...} {}
-    };
+    using data_1d_type = std::array<std::vector<val_type>, field_1d_num>;
+    using data_2d_type = std::array<intp::Mesh<val_type, 2>, field_2d_num>;
+
+    const std::size_t radial_grid;    // For determining minimal psi_p.
+    const std::size_t radial_sample;  // For sampling on radial direction. This
+                                      // is the output data dimension.
+    const std::size_t poloidal_grid;
+
+    MagneticEquilibrium(const GFileRawData<val_type>& gfile_data,
+                        std::size_t radial_grid_num,
+                        std::size_t poloidal_grid_num,
+                        std::size_t radial_sample_num,
+                        val_type psi_ratio,
+                        bool use_si,
+                        field_1d_func_type field_1d_func,
+                        field_2d_func_type field_2d_func)
+        : radial_grid(radial_grid_num),
+          radial_sample(radial_sample_num),
+          poloidal_grid(poloidal_grid_num),
+          use_si_(use_si),
+          psi_ratio_(psi_ratio),
+          psi_delta_{},
+          theta_delta_(2. * M_PI / static_cast<val_type>(poloidal_grid)),
+          axis_value_{},
+          data{field_on_boozer_grid(gfile_data, field_1d_func, field_2d_func)} {
+    }
+
+    auto psi_delta() const { return psi_delta_; }
+    auto theta_delta() const { return theta_delta_; }
+
+    const auto& data_1d(std::size_t i) const { return data.first[i]; }
+    const auto& data_2d(std::size_t i) const { return data.second[i]; }
+
+    auto axis_value_1d(std::size_t i) const { return axis_value_.first[i]; }
+    auto axis_value_2d(std::size_t i) const { return axis_value_.second[i]; }
 
    private:
-    MagneticEquilibriumRaw_ generate_boozer_coordinate_(
+    const bool use_si_;
+    const val_type psi_ratio_;
+    val_type psi_delta_;
+    const val_type theta_delta_;
+    std::pair<std::array<val_type, field_1d_num>,
+              std::array<val_type, field_2d_num>>
+        axis_value_;
+    const std::pair<data_1d_type, data_2d_type> data;
+
+    std::pair<data_1d_type, data_2d_type> field_on_boozer_grid(
         const GFileRawData<val_type>& gfile_data,
-        std::size_t radial_sample,
-        val_type psi_ratio) {
+        field_1d_func_type field_1d_func,
+        field_2d_func_type field_2d_func) {
+        constexpr val_type magnetic_constant = 4.e-7 * M_PI;
+
         if (radial_sample % 2 != 0) {
             throw std::runtime_error(
                 "[MagneticEquilibrium] Radial sample point must be even.");
@@ -108,7 +117,7 @@ class MagneticEquilibrium {
                   << '\n';
 
         auto& timer = Timer::get_timer();
-        timer.start(" - Bspline of flux");
+        timer.start(" - B-Spline of poloidal flux");
         const val_type left_bd = gfile_data.r_left;
         const val_type right_bd = gfile_data.r_left + gfile_data.dim.x();
         const val_type top_bd = gfile_data.z_mid + .5 * gfile_data.dim.y();
@@ -132,8 +141,7 @@ class MagneticEquilibrium {
                       << gfile_data.flux_magnetic_axis << '\n';
         }
 
-        val_type psi_boundary_min = 10. * std::pow(gfile_data.r_center, 2) *
-                                    std::abs(gfile_data.b_center);
+        auto psi_boundary_min = std::numeric_limits<val_type>::infinity();
         for (const auto& pt : gfile_data.boundary) {
             psi_boundary_min = std::min(psi_boundary_min, flux_function(pt));
         }
@@ -143,13 +151,13 @@ class MagneticEquilibrium {
                   << psi_boundary_min << '\n';
 
         const val_type psi_bd = gfile_data.flux_LCFS - psi_ma_intp;
-        val_type psi_wall = psi_ratio * psi_bd;
+        val_type psi_wall = psi_ratio_ * psi_bd;
         if (psi_wall > psi_boundary_min - psi_ma_intp) {
             psi_wall = psi_boundary_min - psi_ma_intp;
             std::cout << "Interpolated flux value at boundary is too small, so "
                          "psi_wall is set to this value.\n";
         }
-        psi_delta_ = psi_wall / static_cast<val_type>(lsp - 1);
+        psi_delta_ = psi_wall / static_cast<val_type>(radial_grid - 1);
 
 #ifdef MEQ_MULTITHREAD
         auto& thread_pool = intp::DedicatedThreadPool<void>::get_instance(4);
@@ -188,8 +196,6 @@ class MagneticEquilibrium {
 #endif
         timer.pause_last_and_start_next(" - Boozer grid");
 
-        constexpr val_type magnetic_constant = 4.e-7 * M_PI;
-
         // safety factor, on shifted psi
         intp::InterpolationFunction1D<ORDER, val_type, val_type>
             safety_factor_intp{std::make_pair(0., psi_bd),
@@ -205,8 +211,7 @@ class MagneticEquilibrium {
             std::make_pair(0., psi_bd),
             intp::util::get_range(gfile_data.pressure)};
 
-        // this following function accepts shifted psi (0 at m.a.)
-
+        // b^2 * J used for boozer coordinate construction
         auto b2j_field = [&](Vec<2, val_type> pt, val_type psi) {
             val_type dp_dr = flux_function.derivative(pt, {1, 0});
             val_type dp_dz = flux_function.derivative(pt, {0, 1});
@@ -217,25 +222,6 @@ class MagneticEquilibrium {
 
             return (f * f + dp_dr * dp_dr + dp_dz * dp_dz) * r2 /
                    (r * (dp_dr * pt.x() + dp_dz * pt.y()));
-        };
-
-        auto b_field = [&](Vec<2, val_type> pt, val_type psi) {
-            val_type dp_dr = flux_function.derivative(pt, {1, 0});
-            val_type dp_dz = flux_function.derivative(pt, {0, 1});
-            val_type f = poloidal_current_intp(psi);
-
-            return std::sqrt(f * f + dp_dr * dp_dr + dp_dz * dp_dz) / pt.x();
-        };
-
-        auto bp2j_field = [&](Vec<2, val_type> pt, val_type) {
-            val_type dp_dr = flux_function.derivative(pt, {1, 0});
-            val_type dp_dz = flux_function.derivative(pt, {0, 1});
-            val_type r = pt.x();
-            pt -= gfile_data.magnetic_axis;
-            val_type r2 = pt.L2_norm_square_();
-
-            return (dp_dr * dp_dr + dp_dz * dp_dz) * r2 /
-                   ((dp_dr * pt.x() + dp_dz * pt.y()) * r);
         };
 
         constexpr val_type PI2 = 2 * M_PI;
@@ -257,25 +243,11 @@ class MagneticEquilibrium {
         intp::InterpolationFunctionTemplate1D<ORDER, val_type, val_type>
             poloidal_template_full{intp::util::get_range(poloidal_angles),
                                    poloidal_angles.size(), false};
+        // This template is used for \theta_boozer(\theta_geo) thus not being
+        // periodic
 
-        // output data
-
-        intp::Mesh<val_type, 2> magnetic_boozer(radial_sample, lst + 1);
-        intp::Mesh<val_type, 2> r_boozer(radial_sample, lst + 1);
-        intp::Mesh<val_type, 2> z_boozer(radial_sample, lst + 1);
-        intp::Mesh<val_type, 2> jacobian_boozer(radial_sample, lst + 1);
-
-        std::vector<val_type> safety_factor(radial_sample);
-        std::vector<val_type> pol_current_n(radial_sample);
-        std::vector<val_type> tor_current_n(radial_sample);
-        std::vector<val_type> pressure_n(radial_sample);
-        std::vector<val_type> r_minor_n(radial_sample);
-
-        std::vector<val_type> tor_flux_n;
-        tor_flux_n.reserve(radial_sample);
-
-        const val_type B0 = b_field(gfile_data.magnetic_axis, 0.);
         const val_type R0 = gfile_data.magnetic_axis.x();
+        const val_type B0 = gfile_data.f_pol.front() / R0;
 
         // This two basic unit determines the output spdata unit,
         // setting them to 1 means SI unit.
@@ -288,13 +260,17 @@ class MagneticEquilibrium {
         const val_type flux_unit =
             length_unit * length_unit * magnetic_field_unit;
 
-        // construct boozer coordinate, integrate B^2 * J along each contour
-
-#define boozer_list() \
-    X(r);             \
-    X(z);             \
-    X(b2j);           \
-    X(bp2j)
+        // Output container
+        data_1d_type data_1d;
+        for (std::size_t fi = 0; fi < data_1d.size(); ++fi) {
+            data_1d[fi].resize(radial_sample);
+        }
+        auto data_2d{([this]<std::size_t... idx>(
+                          std::index_sequence<idx...>) -> data_2d_type {
+            return {
+                (static_cast<void>(idx),
+                 intp::Mesh<val_type, 2>(radial_sample, poloidal_grid + 1))...};
+        })(std::make_index_sequence<std::tuple_size_v<data_2d_type>>{})};
 
         for (std::size_t ri = 0;
              ri < (contours.size() + task_size - 1) / task_size; ++ri) {
@@ -306,91 +282,80 @@ class MagneticEquilibrium {
                 for (std::size_t li = start; li < finish; ++li) {
                     const val_type psi = contours[li].flux() - psi_ma_intp;
                     const std::size_t poloidal_size = contours[li].size() + 1;
-#define X(name)                       \
-    std::vector<val_type> name##_geo; \
-    name##_geo.reserve(poloidal_size)
-                    boozer_list();
-#undef X
 
-                    // quantities on geometric grid
+                    RawValues1D raw_values_1d{
+                        psi / flux_unit,
+                        poloidal_current_intp(psi) / current_unit,
+                        safety_factor_intp(psi),
+                        pressure_intp(psi) / pressure_unit, val_type{}};
+
+                    std::vector<val_type> b2j_geo;
+                    std::vector<val_type> rr_geo;
+                    std::vector<val_type> zz_geo;
+                    b2j_geo.reserve(poloidal_size);
+                    rr_geo.reserve(poloidal_size);
+                    zz_geo.reserve(poloidal_size);
                     for (size_t i = 0; i < poloidal_size; ++i) {
                         const auto& pt = contours[li][i % (poloidal_size - 1)];
-                        r_geo.push_back(pt.x());
-                        z_geo.push_back(pt.y());
                         b2j_geo.push_back(b2j_field(pt, psi));
-                        bp2j_geo.push_back(bp2j_field(pt, psi));
+                        rr_geo.push_back(pt.x());
+                        zz_geo.push_back(pt.y());
                     }
-                    // interpolation on geometric grid
-#define X(name)            \
-    auto name##_geo_intp = \
-        poloidal_template.interpolate(intp::util::get_range(name##_geo))
-                    boozer_list();
-#undef X
-
-                    // integrate
-
+                    auto b2j_geo_intp = poloidal_template.interpolate(
+                        intp::util::get_range(b2j_geo));
+                    auto rr_geo_intp = poloidal_template.interpolate(
+                        intp::util::get_range(rr_geo));
+                    auto zz_geo_intp = poloidal_template.interpolate(
+                        intp::util::get_range(zz_geo));
                     std::vector<val_type> b2j_int;
                     b2j_int.reserve(poloidal_angles.size());
                     b2j_int.push_back(0);
-
-                    std::vector<val_type> bp2j_int;
-                    bp2j_int.reserve(poloidal_angles.size());
-                    bp2j_int.push_back(0);
-
-                    // Poloidal grid begins from \\theta = 0 and ends at \\theta
-                    // = 2\\pi
                     for (size_t i = 1; i < poloidal_angles.size(); ++i) {
                         b2j_int.push_back(
                             b2j_int.back() +
                             util::integrate_coarse(b2j_geo_intp,
                                                    poloidal_angles[i - 1],
                                                    poloidal_angles[i]));
-                        bp2j_int.push_back(
-                            bp2j_int.back() +
-                            util::integrate_coarse(bp2j_geo_intp,
-                                                   poloidal_angles[i - 1],
-                                                   poloidal_angles[i]));
                     }
                     const auto b2j_flux_avg = b2j_int.back() / PI2;
-                    tor_current_n[li] = bp2j_int.back() / (PI2 * current_unit);
-                    // normalization
                     for (auto& v : b2j_int) { v /= b2j_flux_avg; }
                     auto boozer_geo_intp = poloidal_template_full.interpolate(
                         intp::util::get_range(b2j_int));
-
-                    // calculate necessary values on a even-spaced boozer grid
-                    for (size_t i = 0; i <= lst; ++i) {
+                    raw_values_1d.b2j =
+                        b2j_flux_avg / (magnetic_field_unit * length_unit);
+                    // calculate necessary values on a even-spaced boozer
+                    // grid
+                    for (std::size_t i = 0; i <= poloidal_grid; ++i) {
                         const auto theta_boozer =
-                            (static_cast<val_type>(i % lst) + .5) *
+                            (static_cast<val_type>(i % poloidal_grid) + .5) *
                             theta_delta_;
-                        auto theta_geo = util::find_root(
+                        const auto theta_geo = util::find_root(
                             [&](val_type t) {
                                 return boozer_geo_intp(t) - theta_boozer;
                             },
                             val_type{}, PI2);
-                        auto r_grid = r_geo_intp(theta_geo);
-                        auto z_grid = z_geo_intp(theta_geo);
+                        const auto rr = rr_geo_intp(theta_geo);
+                        const auto zz = zz_geo_intp(theta_geo);
 
-                        // be careful of normalization
-                        const auto b = b_field({r_grid, z_grid}, psi);
-                        magnetic_boozer(li, i) = b / magnetic_field_unit;
-                        r_boozer(li, i) = r_grid / length_unit;
-                        // z value is shifted such that magnetic axis has z = 0
-                        z_boozer(li, i) =
-                            (z_grid - gfile_data.magnetic_axis.y()) /
-                            length_unit;
-                        jacobian_boozer(li, i) = b2j_flux_avg / (b * b) *
-                                                 magnetic_field_unit /
-                                                 length_unit;
+                        // invoke user-provided function
+                        const auto field_2d_vals = field_2d_func(
+                            raw_values_1d,
+                            RawValues2D{
+                                flux_function.derivative({rr, zz}, {1, 0}) /
+                                    current_unit,
+                                flux_function.derivative({rr, zz}, {0, 1}) /
+                                    current_unit,
+                                rr / length_unit,
+                                (zz - gfile_data.magnetic_axis.y()) /
+                                    length_unit});
+                        for (std::size_t fi = 0; fi < data_2d.size(); ++fi) {
+                            data_2d[fi](li, i) = field_2d_vals[fi];
+                        }
                     }
-
-                    safety_factor[li] = safety_factor_intp(psi);
-                    pol_current_n[li] =
-                        poloidal_current_intp(psi) / current_unit;
-                    pressure_n[li] = pressure_intp(psi) / pressure_unit;
-                    // r_minor defined as distance from magnetic axis at weak
-                    // field side this value is always normalized to R0
-                    r_minor_n[li] = r_geo_intp(0.) / R0 - 1.;
+                    const auto field_1d_vals = field_1d_func(raw_values_1d);
+                    for (std::size_t fi = 0; fi < data_1d.size(); ++fi) {
+                        data_1d[fi][li] = field_1d_vals[fi];
+                    }
                 }
             };
 #ifdef MEQ_MULTITHREAD
@@ -399,158 +364,119 @@ class MagneticEquilibrium {
             construct_boozer();
 #endif
         }
-
-        for (std::size_t ri = 0; ri < contours.size(); ++ri) {
-            const val_type psi = contours[ri].flux() - psi_ma_intp;
-            tor_flux_n.push_back(
-                (ri == 0 ? 0. : tor_flux_n.back()) +
-                util::integrate_coarse(
-                    safety_factor_intp,
-                    static_cast<val_type>(
-                        ri == 0 ? 0. : (contours[ri - 1].flux() - psi_ma_intp)),
-                    psi) /
-                    flux_unit);
-        }
 #ifdef MEQ_MULTITHREAD
         for (auto& res : tasks) { res.get(); }
 #endif
         timer.pause();
 
+        // calculate axis values
+        ([&](RawValues1D r1d, RawValues2D r2d) {
+            r1d.b2j = r1d.f * r1d.q;
+            axis_value_.first = field_1d_func(r1d);
+            axis_value_.second = field_2d_func(r1d, r2d);
+        })({0., gfile_data.f_pol.front() / current_unit,
+            gfile_data.safety_factor.front(),
+            gfile_data.pressure.front() / pressure_unit, 0.},
+           {0., 0., gfile_data.magnetic_axis.x() / length_unit, 0.});
+
         // psi_delta_ is normalized after flux surface is fully constructed, and
         // should never be changed hereafter
         psi_delta_ /= flux_unit;
 
-        const auto q0 = safety_factor_intp(0);
-        const auto b0n = B0 / magnetic_field_unit;
-        const auto g0n = poloidal_current_intp(0) / current_unit;
-        const auto p0n = pressure_intp(0) / pressure_unit;
-        return MagneticEquilibriumRaw_{
-            {std::move(magnetic_boozer), std::move(r_boozer),
-             std::move(z_boozer), std::move(jacobian_boozer)},
-            {std::move(safety_factor), std::move(pol_current_n),
-             std::move(tor_current_n), std::move(pressure_n),
-             std::move(r_minor_n), std::move(tor_flux_n)},
-            {b0n, R0 / length_unit, 0., q0 * g0n / (b0n * b0n)},
-            {q0, g0n, 0., p0n, 0., 0.},
-            flux_unit};
+        return {data_1d, data_2d};
     }
 
-   public:
-    template <typename F>
-    MagneticEquilibrium(const GFileRawData<val_type>& gfile_data,
-                        std::size_t radial_grid_num,
-                        std::size_t poloidal_grid_num,
-                        bool use_si,
-                        std::size_t radial_sample,
-                        val_type psi_ratio,
-                        const F& generate_psi_for_output)
-        : lsp(radial_grid_num),
-          lst(poloidal_grid_num),
-          use_si_(use_si),
-          psi_delta_(psi_ratio *
-                     (gfile_data.flux_LCFS - gfile_data.flux_magnetic_axis) /
-                     static_cast<val_type>(lsp - 1)),
-          theta_delta_(2. * M_PI / static_cast<val_type>(lst)),
-          spdata_raw_{generate_boozer_coordinate_(gfile_data,
-                                                  radial_sample,
-                                                  psi_ratio)},
-          spdata_intp_{spdata_raw_, *this, generate_psi_for_output,
-                       std::make_index_sequence<FIELD_NUM_2D>{},
-                       std::make_index_sequence<FIELD_NUM_1D>{}} {}
-
-    const std::size_t lsp, lst;
-
-    val_type psi_delta() const { return psi_delta_; }
-    val_type theta_delta() const { return theta_delta_; }
-
-    const MagneticEquilibriumIntp_& intp_data() const { return spdata_intp_; }
-
-    const std::vector<val_type>& psi_for_output() const {
-        return intp_data().psi_sample_for_output;
-    }
-
-    const std::array<val_type, FIELD_NUM_2D>& axis_value_2d() const {
-        return spdata_raw_.axis_value_2d;
-    }
-    const std::array<val_type, FIELD_NUM_1D>& axis_value_1d() const {
-        return spdata_raw_.axis_value_1d;
-    }
-
-   private:
-    const bool use_si_;
-    val_type psi_delta_;
-    const val_type theta_delta_;
-    const MagneticEquilibriumRaw_ spdata_raw_;
-    const MagneticEquilibriumIntp_ spdata_intp_;
-
-#ifdef MEQ_ZERNIKE_SERIES_
-    Zernike::Series<val_type>
-#else
-    intp::InterpolationFunction<val_type, 2, ORDER_OUT, val_type>
-#endif
-    create_2d_spline_(const intp::Mesh<val_type, 2>& data,
-                      const std::vector<val_type>& psi_sample) const {
-#ifdef MEQ_ZERNIKE_SERIES_
-        static_cast<void>(psi_sample);
-        // The Zernike series is actually representing f(r, theta+delta/2)
-
-        std::vector<val_type> r(spdata_raw_.data_1d[5]);
-        const auto psi_w = r[r.size() - 1];
-        for (auto& v : r) { v = std::sqrt(v / psi_w); }
-
-        const auto zernike_order = static_cast<int>(
-            lst / 5 > MEQ_MAX_ZERNIKE_POLAR_ORDER ? MEQ_MAX_ZERNIKE_POLAR_ORDER
-                                                  : lst / 5);
-        return {zernike_order, r.size(), lst, data, r};
-#else
-        // interpolate the even-spaced data
-        intp::InterpolationFunction<val_type, 2, ORDER_OUT, val_type> data_intp(
-            {false, true}, data,
-            std::make_pair(psi_delta(),
-                           psi_delta() * static_cast<val_type>(lsp - 1)),
-            std::make_pair(.5 * theta_delta_, 2. * M_PI + .5 * theta_delta_));
-
-        if (psi_sample.empty()) { return data_intp; }
-
-        // resample on the interpolated function
-        intp::Mesh<val_type, 2> data_resampled(lsp, lst + 1);
-        for (std::size_t i = 0; i < lsp; ++i) {
-            for (std::size_t j = 0; j <= lst; ++j) {
-                data_resampled(i, j) =
-                    data_intp(psi_sample[i],
-                              (static_cast<val_type>(j) + .5) * theta_delta_);
-            }
-        }
-        // construct the interpolation function for output
-        return intp::InterpolationFunction<val_type, 2, ORDER_OUT, val_type>(
-            {false, true}, std::move(data_resampled),
-            intp::util::get_range(psi_sample),
-            std::make_pair(.5 * theta_delta_, 2. * M_PI + .5 * theta_delta_));
-#endif
-    }
-
-    intp::InterpolationFunction1D<ORDER_OUT, val_type, val_type>
-    create_1d_spline_(const std::vector<val_type>& data,
-                      const std::vector<val_type>& psi_sample) const {
-        // interpolate the even-spaced data
-        intp::InterpolationFunction1D<ORDER_OUT, val_type, val_type> data_intp(
-            std::make_pair(psi_delta(),
-                           psi_delta() * static_cast<val_type>(lsp - 1)),
-            intp::util::get_range(data), false);
-
-        if (psi_sample.empty()) { return data_intp; }
-
-        // resample on the interpolated function
-        std::vector<val_type> data_resampled;
-        data_resampled.reserve(psi_sample.size());
-        for (const auto& psi : psi_sample) {
-            data_resampled.push_back(data_intp(psi));
-        }
-
-        return intp::InterpolationFunction1D<ORDER_OUT, val_type, val_type>{
-            intp::util::get_range(psi_sample),
-            intp::util::get_range(data_resampled)};
-    }
+    // #ifdef MEQ_ZERNIKE_SERIES_
+    //     Zernike::Series<val_type>
+    // #else
+    //     intp::InterpolationFunction<val_type, 2, ORDER_OUT, val_type>
+    // #endif
+    //     create_2d_spline_(const intp::Mesh<val_type, 2>& data,
+    //                       const std::vector<val_type>& psi_sample) const {
+    // #ifdef MEQ_ZERNIKE_SERIES_
+    //         static_cast<void>(psi_sample);
+    //         // The Zernike series is actually representing f(r,
+    //         theta+delta/2)
+    //
+    //         std::vector<val_type> r(spdata_raw_.data_1d[5]);
+    //         const auto psi_w = r[r.size() - 1];
+    //         for (auto& v : r) { v = std::sqrt(v / psi_w); }
+    //
+    //         const auto zernike_order = static_cast<int>(
+    //             lst / 5 > MEQ_MAX_ZERNIKE_POLAR_ORDER ?
+    //             MEQ_MAX_ZERNIKE_POLAR_ORDER
+    //                                                   : lst / 5);
+    //         return {zernike_order, r.size(), lst, data, r};
+    // #else
+    //         // interpolate the even-spaced data
+    //         intp::InterpolationFunction<val_type, 2, ORDER_OUT, val_type>
+    //         data_intp(
+    //             {false, true}, data,
+    //             std::make_pair(psi_delta(),
+    //                            psi_delta() * static_cast<val_type>(lsp - 1)),
+    //             std::make_pair(.5 * theta_delta_, 2. * M_PI + .5 *
+    //             theta_delta_));
+    //
+    //         if (psi_sample.empty()) { return data_intp; }
+    //
+    //         // resample on the interpolated function
+    //         intp::Mesh<val_type, 2> data_resampled(lsp, lst + 1);
+    //         for (std::size_t i = 0; i < lsp; ++i) {
+    //             for (std::size_t j = 0; j <= lst; ++j) {
+    //                 data_resampled(i, j) =
+    //                     data_intp(psi_sample[i],
+    //                               (static_cast<val_type>(j) + .5) *
+    //                               theta_delta_);
+    //             }
+    //         }
+    //         // construct the interpolation function for output
+    //         return intp::InterpolationFunction<val_type, 2, ORDER_OUT,
+    //         val_type>(
+    //             {false, true}, std::move(data_resampled),
+    //             intp::util::get_range(psi_sample),
+    //             std::make_pair(.5 * theta_delta_, 2. * M_PI + .5 *
+    //             theta_delta_));
+    // #endif
+    //     }
+    //
+    //     intp::InterpolationFunction1D<ORDER_OUT, val_type, val_type>
+    //     create_1d_spline_(const std::vector<val_type>& data,
+    //                       const std::vector<val_type>& psi_sample) const {
+    //         // interpolate the even-spaced data
+    //         intp::InterpolationFunction1D<ORDER_OUT, val_type, val_type>
+    //         data_intp(
+    //             std::make_pair(psi_delta(),
+    //                            psi_delta() * static_cast<val_type>(lsp - 1)),
+    //             intp::util::get_range(data), false);
+    //
+    //         if (psi_sample.empty()) { return data_intp; }
+    //
+    //         // resample on the interpolated function
+    //         std::vector<val_type> data_resampled;
+    //         data_resampled.reserve(psi_sample.size());
+    //         for (const auto& psi : psi_sample) {
+    //             data_resampled.push_back(data_intp(psi));
+    //         }
+    //
+    //         return intp::InterpolationFunction1D<ORDER_OUT, val_type,
+    //         val_type>{
+    //             intp::util::get_range(psi_sample),
+    //             intp::util::get_range(data_resampled)};
+    //     }
 };
+
+// template <typename T, typename F1, typename F2>
+// auto construct_magnetic_equilibrium(const GFileRawData<T>& gfile_data,
+//                                     std::size_t radial_grid_num,
+//                                     std::size_t poloidal_grid_num,
+//                                     std::size_t radial_sample_num,
+//                                     bool use_si,
+//                                     F1 field_1d_func,
+//                                     F2 field_2d_func) {
+//     return MagneticEquilibrium<T, F1, F2>(gfile_data, radial_grid_num,
+//                                           poloidal_grid_num,
+//                                           radial_sample_num, use_si,
+//                                           field_1d_func, field_2d_func);
+// }
 
 #endif  // MEQ_MAGNETIC_EQUILIBRIUM_H
