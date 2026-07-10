@@ -134,7 +134,7 @@ struct GFileRawData {
     // operators
 
     template <typename U>
-    friend std::ifstream& operator>>(std::ifstream& is, GFileRawData<U>& g) {
+    friend std::istream& operator>>(std::istream& is, GFileRawData<U>& g) {
         using val_type = GFileRawData<U>::val_type;
         std::string s_dum;
         std::string line;
