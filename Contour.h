@@ -25,8 +25,13 @@ class Contour {
     Contour(val_type psi, const F& flux, const auto& g_file) : flux_(psi) {
         pts_.reserve(g_file.boundary.size());
         for (size_t i = 0; i < g_file.boundary.size(); ++i) {
-            pts_.emplace_back(util::vec_field_find_root(
-                flux, g_file.magnetic_axis, g_file.boundary[i], psi));
+            if (psi >= flux(g_file.boundary[i])) {
+                // Use boundary point if given psi value is too large
+                pts_.push_back(g_file.boundary[i]);
+            } else {
+                pts_.push_back(util::vec_field_find_root(
+                    flux, g_file.magnetic_axis, g_file.boundary[i], psi));
+            }
         }
 #ifdef _DEBUG
         size_t count{};
