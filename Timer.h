@@ -60,11 +60,12 @@ void Timer::pause_last_and_start_next(std::string func_name) {
 }
 
 void Timer::pause() {
+    if (current_func_names.empty()) { return; }
     auto end_time = std::chrono::high_resolution_clock::now();
     auto elapsed_time =
         end_time - time_consuming.at(current_func_names.back()).second;
     time_consuming.at(current_func_names.back()).first += elapsed_time;
-    if (!current_func_names.empty()) { current_func_names.pop_back(); }
+    current_func_names.pop_back();
 }
 
 void Timer::pause(std::string func_name) {
