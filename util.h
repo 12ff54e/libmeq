@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
@@ -25,7 +26,10 @@ inline int sgn(const Tf& val) {
 template <typename T>
 inline T arctan(T x, T y) {
     T atan = std::atan2(y, x);
-    return atan < 0 ? static_cast<T>(2 * static_cast<T>(M_PIl) + atan) : atan;
+    return atan < 0
+               ? static_cast<T>(
+                     2 * static_cast<T>(std::numbers::pi_v<long double>) + atan)
+               : atan;
 }
 
 template <typename T>

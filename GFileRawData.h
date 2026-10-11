@@ -144,7 +144,7 @@ struct GFileRawData {
         // causing problems
         std::getline(is, line);
         ss_line.str(line);
-        ss_line.read(g.metadata.begin(), 48);
+        ss_line.read(g.metadata.data(), 48);
         char str_tmp[5]{};
         ss_line.read(str_tmp, 4);
         ss_line.read(str_tmp, 4);
