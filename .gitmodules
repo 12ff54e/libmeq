@@ -1,3 +1,4 @@
 [submodule "BSplineInterpolation"]
 	path = BSplineInterpolation
 	url = ../../12ff54e/BSplineInterpolation.git
+	branch = opt/eval-speed

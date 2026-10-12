@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "BSplineInterpolation/src/include/Interpolation.hpp"
+#include "BSplineInterpolation/include/bsintp/Interpolation.hpp"
 #include "Vec.h"
 #include "util.h"
 

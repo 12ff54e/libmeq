@@ -2,7 +2,7 @@
 #include <iomanip>
 #include <iostream>
 
-#include "BSplineInterpolation/src/include/Mesh.hpp"
+#include "BSplineInterpolation/include/bsintp/Mesh.hpp"
 
 #define ZQ_TIMER_IMPLEMENTATION
 #include "Timer.h"

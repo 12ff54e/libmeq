@@ -5,8 +5,8 @@
 #include <type_traits>
 #include <utility>
 
-#include "BSplineInterpolation/src/include/DedicatedThreadPool.hpp"
-#include "BSplineInterpolation/src/include/Interpolation.hpp"
+#include "BSplineInterpolation/include/bsintp/DedicatedThreadPool.hpp"
+#include "BSplineInterpolation/include/bsintp/Interpolation.hpp"
 #include "Contour.h"
 #include "GFileRawData.h"
 #include "Timer.h"
