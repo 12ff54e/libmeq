@@ -1,12 +1,15 @@
 #ifndef MEQ_GFILE_RAW_DATA_H
 #define MEQ_GFILE_RAW_DATA_H
 
+#include <cctype>
 #include <fstream>
+#include <optional>
 #include <sstream>  // stringstream
 #include <string>
 #include <vector>
 
 #include "BSplineInterpolation/include/bsintp/Interpolation.hpp"
+#include "Cocos.h"
 #include "Vec.h"
 #include "util.h"
 
@@ -14,12 +17,16 @@ template <typename T = double>
 struct GFileRawData {
     using val_type = T;
 
-    std::array<char, 48> metadata;
+    std::array<char, 48> metadata{};
     std::string extra_metadata;
     std::string code_name;
     std::string date;
     std::string shot_id;
     std::string time;
+
+    // The arrays retain the file's convention. Reads infer it from the header
+    // and signs unless read(stream, Cocos(index)) supplies an override.
+    Cocos cocos;
 
     // horizontal sample number
     unsigned int nw;
@@ -82,10 +89,33 @@ struct GFileRawData {
     GFileRawData() : flux{1, 1}, complete_(false) {}
     GFileRawData(const GFileRawData&) = delete;
     GFileRawData(GFileRawData&&) = default;
+    GFileRawData& operator=(GFileRawData&&) = default;
 
     // properties
 
     bool is_complete() const noexcept { return complete_; }
+
+    struct BoozerFactors {
+        val_type flux;
+        val_type outward_flux;
+        val_type flux_direction;
+        int toroidal;
+        int safety_factor;
+    };
+
+    // libmeq uses COCOS 2: clockwise phi, counterclockwise theta, Wb/rad.
+    // Contours use an outward-increasing flux; callbacks retain signed psi.
+    auto boozer_factors() const {
+        const auto delta = flux_LCFS - flux_magnetic_axis;
+        if (!std::isfinite(delta) || delta == 0) {
+            throw std::invalid_argument(
+                "GEQDSK axis and boundary flux must be finite and distinct.");
+        }
+        const auto factors = cocos.template factors_to<val_type>(Cocos(2));
+        const auto direction = std::copysign(val_type{1}, factors.flux * delta);
+        return BoozerFactors{factors.flux, direction * factors.flux, direction,
+                             factors.toroidal, factors.safety_factor};
+    }
 
     // post-process
 
@@ -131,11 +161,10 @@ struct GFileRawData {
         }
     }
 
-    // operators
-
-    template <typename U>
-    friend std::istream& operator>>(std::istream& is, GFileRawData<U>& g) {
-        using val_type = GFileRawData<U>::val_type;
+    std::istream& read(std::istream& is,
+                       std::optional<Cocos> input_cocos = std::nullopt) {
+        *this = GFileRawData{};
+        auto& g = *this;
         std::string s_dum;
         std::string line;
         std::stringstream ss_line;
@@ -278,12 +307,79 @@ struct GFileRawData {
             return is;
         }
 
+        g.cocos = input_cocos ? *input_cocos : g.infer_cocos_();
         g.complete_ = true;
 
         return is;
     }
 
+    friend std::istream& operator>>(std::istream& is, GFileRawData& g) {
+        return g.read(is);
+    }
+
    private:
+    Cocos infer_cocos_() const {
+        auto header = std::string(metadata.begin(), metadata.end()) + " " +
+                      extra_metadata;
+        for (auto& ch : header) {
+            ch =
+                static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+        }
+        // Explicit tags override producer hints. Do not match words such as
+        // MYCOCOS or COCOS_INPUT; allow COCOS=2, COCOS 2 and COCOS_OUT=2.
+        auto word_char = [](char ch) {
+            return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_';
+        };
+        for (std::size_t pos = 0;
+             (pos = header.find("COCOS", pos)) != std::string::npos; ++pos) {
+            if (pos && word_char(header[pos - 1])) { continue; }
+            auto end = pos + 5;
+            if (header.compare(end, 4, "_OUT") == 0) { end += 4; }
+            if (end < header.size() && word_char(header[end])) { continue; }
+            while (end < header.size() &&
+                   std::isspace(static_cast<unsigned char>(header[end]))) {
+                ++end;
+            }
+            if (end < header.size() &&
+                (header[end] == '=' || header[end] == ':')) {
+                ++end;
+            }
+            std::istringstream value(header.substr(end));
+            int index;
+            if (!(value >> index) ||
+                (value.peek() != std::char_traits<char>::eof() &&
+                 (word_char(static_cast<char>(value.peek())) ||
+                  value.peek() == '.'))) {
+                throw std::invalid_argument(
+                    "Invalid COCOS tag in GEQDSK header.");
+            }
+            return Cocos(index);
+        }
+        if (header.find("CHEASE") != std::string::npos) { return Cocos(2); }
+
+        // EFIT uses (R,phi,Z). Infer the flux and q signs as well, since
+        // EFIT variants may keep psi increasing and q positive for either Ip
+        // or B direction. Missing signs leave the COCOS 1 defaults in place.
+        auto sign = [](val_type value) {
+            return std::isfinite(value) && value != 0 ? (value > 0 ? 1 : -1)
+                                                      : 0;
+        };
+        const auto ip = sign(current);
+        const auto dpsi = sign(flux_LCFS - flux_magnetic_axis);
+        const auto b = f_pol.empty() ? sign(b_center) : sign(f_pol.front());
+        const auto q = safety_factor.empty() ? 0 : sign(safety_factor.front());
+        const int sigma_bp = ip && dpsi ? ip * dpsi : 1;
+        const int sigma_r_theta_phi = ip && b && q ? ip * b * q : 1;
+        for (const auto index : {1, 3, 5, 7}) {
+            const Cocos candidate(index);
+            if (candidate.sigma_bp() == sigma_bp &&
+                candidate.sigma_r_theta_phi() == sigma_r_theta_phi) {
+                return candidate;
+            }
+        }
+        return Cocos(1);
+    }
+
     // the completeness of raw data
     bool complete_;
 };
