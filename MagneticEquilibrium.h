@@ -24,6 +24,7 @@ class MagneticEquilibrium {
     using val_type = T;
 
     struct RawValues1D {
+        // Signed COCOS 2 values; psi is measured from the magnetic axis.
         val_type psi;  // poloidal flux
         val_type f;    // poloidal current
         val_type q;    // safety factor
@@ -106,15 +107,14 @@ class MagneticEquilibrium {
                 "[MagneticEquilibrium] Radial sample point must be even.");
         }
 
-        std::cout << "Toroidal field direction (in cylindrical coordinate "
-                     "(X,Z,phi)):\n";
-        std::cout << "  Magnetic field: "
-                  << (gfile_data.f_pol.front() > 0 ? '+' : '-') << '\n';
+        const auto convention = gfile_data.boozer_factors();
+        const auto f_axis = convention.toroidal * gfile_data.f_pol.front();
+        std::cout << "GEQDSK COCOS " << gfile_data.cocos.index()
+                  << "; Boozer output COCOS 2.\n"
+                     "Toroidal field direction in (R,Z,phi):\n";
+        std::cout << "  Magnetic field: " << (f_axis > 0 ? '+' : '-') << '\n';
         std::cout << "  Current: "
-                  << (gfile_data.flux_LCFS > gfile_data.flux_magnetic_axis
-                          ? '+'
-                          : '-')
-                  << '\n';
+                  << (convention.flux_direction > 0 ? '+' : '-') << '\n';
 
         auto& timer = Timer::get_timer();
         timer.start(" - B-Spline of poloidal flux");
@@ -122,19 +122,33 @@ class MagneticEquilibrium {
         const val_type right_bd = gfile_data.r_left + gfile_data.dim.x();
         const val_type top_bd = gfile_data.z_mid + .5 * gfile_data.dim.y();
         const val_type bottom_bd = gfile_data.z_mid - .5 * gfile_data.dim.y();
+        // The interpolation and contour search need increasing radial flux.
+        // Restore the COCOS 2 sign only when returning physical quantities.
+        auto outward_flux = gfile_data.flux;
+        for (unsigned i = 0; i < gfile_data.nw; ++i) {
+            for (unsigned j = 0; j < gfile_data.nh; ++j) {
+                outward_flux(i, j) =
+                    convention.outward_flux *
+                    (outward_flux(i, j) - gfile_data.flux_magnetic_axis);
+            }
+        }
+        const auto psi_bd_file =
+            convention.outward_flux *
+            (gfile_data.flux_LCFS - gfile_data.flux_magnetic_axis);
         intp::InterpolationFunction<val_type, 2u, ORDER, val_type>
-            flux_function(gfile_data.flux, std::make_pair(left_bd, right_bd),
+            flux_function(std::move(outward_flux),
+                          std::make_pair(left_bd, right_bd),
                           std::make_pair(bottom_bd, top_bd));
 
         // check poloidal flux value at magnetic axis
         const auto psi_ma_intp = flux_function(gfile_data.magnetic_axis);
-        if (std::abs((psi_ma_intp - gfile_data.flux_magnetic_axis) /
-                     (gfile_data.flux_LCFS - gfile_data.flux_magnetic_axis)) >
-            1.e-4) {
+        if (std::abs(psi_ma_intp / psi_bd_file) > 1.e-4) {
             std::cout << "The poloidal flux of magnetic axis given in gfile "
                          "deviates from interpolated value.\n"
                       << "  \\psi_p in gfile: " << gfile_data.flux_magnetic_axis
-                      << "\n  \\psi_p from interpolation: " << psi_ma_intp
+                      << "\n  \\psi_p from interpolation: "
+                      << gfile_data.flux_magnetic_axis +
+                             psi_ma_intp / convention.outward_flux
                       << '\n';
         } else {
             std::cout << "The poloidal flux of magnetic axis is "
@@ -145,12 +159,12 @@ class MagneticEquilibrium {
         for (const auto& pt : gfile_data.boundary) {
             psi_boundary_min = std::min(psi_boundary_min, flux_function(pt));
         }
-        std::cout << "The poloidal flux of last closed flux surface is "
-                  << gfile_data.flux_LCFS << '\n'
-                  << "Minimum of interpolated value at boundary points is "
+        std::cout << "Outward flux span to the last closed flux surface is "
+                  << psi_bd_file << '\n'
+                  << "Minimum outward flux at boundary points is "
                   << psi_boundary_min << '\n';
 
-        const val_type psi_bd = gfile_data.flux_LCFS - psi_ma_intp;
+        const val_type psi_bd = psi_bd_file - psi_ma_intp;
         val_type psi_wall = psi_ratio_ * psi_bd;
         if (psi_wall > psi_boundary_min - psi_ma_intp) {
             psi_wall = psi_boundary_min - psi_ma_intp;
@@ -247,7 +261,7 @@ class MagneticEquilibrium {
         // periodic
 
         const val_type R0 = gfile_data.magnetic_axis.x();
-        const val_type B0 = gfile_data.f_pol.front() / R0;
+        const val_type B0 = f_axis / R0;
 
         // This two basic unit determines the output spdata unit,
         // setting them to 1 means SI unit.
@@ -256,7 +270,9 @@ class MagneticEquilibrium {
 
         const val_type current_unit = length_unit * magnetic_field_unit;
         const val_type pressure_unit =
-            magnetic_field_unit * magnetic_field_unit / magnetic_constant;
+            use_si_
+                ? 1.
+                : magnetic_field_unit * magnetic_field_unit / magnetic_constant;
         const val_type flux_unit =
             length_unit * length_unit * magnetic_field_unit;
 
@@ -284,9 +300,10 @@ class MagneticEquilibrium {
                     const std::size_t poloidal_size = contours[li].size() + 1;
 
                     RawValues1D raw_values_1d{
-                        psi / flux_unit,
-                        poloidal_current_intp(psi) / current_unit,
-                        safety_factor_intp(psi),
+                        convention.flux_direction * psi / flux_unit,
+                        convention.toroidal * poloidal_current_intp(psi) /
+                            current_unit,
+                        convention.safety_factor * safety_factor_intp(psi),
                         pressure_intp(psi) / pressure_unit, val_type{}};
 
                     std::vector<val_type> b2j_geo;
@@ -321,8 +338,9 @@ class MagneticEquilibrium {
                     for (auto& v : b2j_int) { v /= b2j_flux_avg; }
                     auto boozer_geo_intp = poloidal_template_full.interpolate(
                         intp::util::get_range(b2j_int));
-                    raw_values_1d.b2j =
-                        b2j_flux_avg / (magnetic_field_unit * length_unit);
+                    raw_values_1d.b2j = convention.flux_direction *
+                                        b2j_flux_avg /
+                                        (magnetic_field_unit * length_unit);
                     // calculate necessary values on a even-spaced boozer
                     // grid
                     for (std::size_t i = 0; i <= poloidal_grid; ++i) {
@@ -341,9 +359,11 @@ class MagneticEquilibrium {
                         const auto field_2d_vals = field_2d_func(
                             raw_values_1d,
                             RawValues2D{
-                                flux_function.derivative({rr, zz}, {1, 0}) /
+                                convention.flux_direction *
+                                    flux_function.derivative({rr, zz}, {1, 0}) /
                                     current_unit,
-                                flux_function.derivative({rr, zz}, {0, 1}) /
+                                convention.flux_direction *
+                                    flux_function.derivative({rr, zz}, {0, 1}) /
                                     current_unit,
                                 rr / length_unit,
                                 (zz - gfile_data.magnetic_axis.y()) /
@@ -374,14 +394,14 @@ class MagneticEquilibrium {
             r1d.b2j = r1d.f * r1d.q;
             axis_value_.first = field_1d_func(r1d);
             axis_value_.second = field_2d_func(r1d, r2d);
-        })({0., gfile_data.f_pol.front() / current_unit,
-            gfile_data.safety_factor.front(),
+        })({0., f_axis / current_unit,
+            convention.safety_factor * gfile_data.safety_factor.front(),
             gfile_data.pressure.front() / pressure_unit, 0.},
            {0., 0., gfile_data.magnetic_axis.x() / length_unit, 0.});
 
         // psi_delta_ is normalized after flux surface is fully constructed, and
         // should never be changed hereafter
-        psi_delta_ /= flux_unit;
+        psi_delta_ *= convention.flux_direction / flux_unit;
 
         return {data_1d, data_2d};
     }

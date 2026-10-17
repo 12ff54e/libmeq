@@ -28,6 +28,16 @@ conversion factors. It preserves the physical field and current directions.
 The flux-derivative factor applies to both `p_prime` and `f_f_prime`.
 Indices 11–18 use full poloidal flux; indices 1–8 use flux divided by 2π.
 
+`MagneticEquilibrium` converts its callback values to COCOS 2: phi runs
+clockwise from above, theta runs counterclockwise in the (R,Z) plane, and
+poloidal flux uses Wb/rad. It subtracts the axis flux. Contour searches use an
+outward-increasing working flux, but returned flux, its derivatives, and the
+Jacobian keep their signs. Profiles remain ordered from axis to edge.
+With `use_si=false`, lengths use R_axis and fields use the signed F_axis/R_axis
+in COCOS 2; pressure uses B_axis²/μ₀. Thus normalized flux and `psi_delta()`
+can be negative. The source data are unchanged.
+With `use_si=true`, pressure is in pascals, including its axis value.
+
 The sign rules follow [Sauter and Medvedev, COCOS, Table I and Appendix C](https://crppwww.epfl.ch/~sauter/COCOS/Sauter_COORD_CONVENTIONS_COCOS_2012_updated_after_reprint_for_Appendices_and_refs.pdf).
 See also the [EFIT g-file conventions](https://efit-ai.gitlab.io/efit/files.html)
 and [CHEASE documentation](https://crppwww.epfl.ch/~sauter/chease/).

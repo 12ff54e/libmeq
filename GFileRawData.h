@@ -29,31 +29,31 @@ struct GFileRawData {
     Cocos cocos;
 
     // horizontal sample number
-    unsigned int nw;
+    unsigned int nw{};
     // vertical sample number
-    unsigned int nh;
+    unsigned int nh{};
     // horizontal and vertical dimension
-    Vec<2, double> dim;
+    Vec<2, double> dim{};
     // center position of horizontal range
-    val_type r_center;
+    val_type r_center{};
     // left position of horizontal range
-    val_type r_left;
+    val_type r_left{};
     // center position of vertical range
-    val_type z_mid;
+    val_type z_mid{};
     // magnetic axis coordinate
-    Vec<2, val_type> magnetic_axis;
+    Vec<2, val_type> magnetic_axis{};
     // magnetic flux at magnetic axis
-    val_type flux_magnetic_axis;
+    val_type flux_magnetic_axis{};
     // magnetic flux at Last Closed Flux Surface
-    val_type flux_LCFS;
+    val_type flux_LCFS{};
     // magnetic field strength at center position
-    val_type b_center;
+    val_type b_center{};
     // current
-    val_type current;
+    val_type current{};
     // magnetic flux at separatrix
-    val_type flux_sep;
+    val_type flux_sep{};
     // separatrix coordinate
-    Vec<2, val_type> sep;
+    Vec<2, val_type> sep{};
 
     // poloidal current density profile
     std::vector<val_type> f_pol;
@@ -71,9 +71,9 @@ struct GFileRawData {
     std::vector<val_type> safety_factor;
 
     // boundary point number
-    unsigned int boundary_num;
+    unsigned int boundary_num{};
     // limiter pointer number
-    unsigned int limiter_num;
+    unsigned int limiter_num{};
 
     // boundary point coordinates
     std::vector<Vec<2, val_type>> boundary;
