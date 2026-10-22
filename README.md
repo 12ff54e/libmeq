@@ -42,6 +42,26 @@ The sign rules follow [Sauter and Medvedev, COCOS, Table I and Appendix C](https
 See also the [EFIT g-file conventions](https://efit-ai.gitlab.io/efit/files.html)
 and [CHEASE documentation](https://crppwww.epfl.ch/~sauter/chease/).
 
+# Spline preparation
+
+Polynomial coefficients cost time and memory to build. `prepare_polynomial`
+keeps control-point evaluation unless the expected work reaches
+`2 * (degree + 1)` evaluations per active cell. For the quintic splines used
+here, that means 12 evaluations per cell. Value and derivative calls both
+count. This is a workload estimate, not a guarantee of faster evaluation.
+
+Equilibrium construction applies this rule to the input flux spline, the
+poloidal-current profile, and the map inverted by the Boozer angle searches.
+It counts known flux and profile calls and estimates eight calls per angle
+search. Larger input grids therefore need more reuse before conversion pays.
+Short-lived geometry splines keep their control-point form. A two-dimensional
+quintic table stores 36 coefficients per cell.
+
+Prepare coefficients before sharing a spline with reader threads. Existing
+coefficients stay cached. The angle-map conversion is skipped when both
+`MEQ_MULTITHREAD` and `INTP_MULTITHREAD` are set, since it would submit work to
+the same thread pool that is running the contour tasks.
+
 # Note
 
 This repository is separated from [mct](https://github.com/12ff54e/mct), which depends this library to construct magneitc equlibrium.

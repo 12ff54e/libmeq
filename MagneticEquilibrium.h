@@ -9,6 +9,7 @@
 #include "BSplineInterpolation/include/bsintp/Interpolation.hpp"
 #include "Contour.h"
 #include "GFileRawData.h"
+#include "SplinePreparation.h"
 #include "Timer.h"
 
 #ifdef MEQ_ZERNIKE_SERIES_
@@ -139,6 +140,12 @@ class MagneticEquilibrium {
             flux_function(std::move(outward_flux),
                           std::make_pair(left_bd, right_bd),
                           std::make_pair(bottom_bd, top_bd));
+        // Each contour samples every boundary point; Boozer construction
+        // samples two flux derivatives on both geometric and output grids.
+        // Count only that known work, without extra contour root iterations.
+        util::prepare_polynomial(
+            flux_function, radial_sample * (3 * gfile_data.boundary.size() +
+                                            2 * poloidal_grid + 4));
 
         // check poloidal flux value at magnetic axis
         const auto psi_ma_intp = flux_function(gfile_data.magnetic_axis);
@@ -224,6 +231,9 @@ class MagneticEquilibrium {
         intp::InterpolationFunction1D<ORDER, val_type, val_type> pressure_intp{
             std::make_pair(0., psi_bd),
             intp::util::get_range(gfile_data.pressure)};
+        util::prepare_polynomial(
+            poloidal_current_intp,
+            radial_sample * (gfile_data.boundary.size() + 2));
 
         // b^2 * J used for boozer coordinate construction
         auto b2j_field = [&](Vec<2, val_type> pt, val_type psi) {
@@ -338,6 +348,13 @@ class MagneticEquilibrium {
                     for (auto& v : b2j_int) { v /= b2j_flux_avg; }
                     auto boozer_geo_intp = poloidal_template_full.interpolate(
                         intp::util::get_range(b2j_int));
+#if !defined(MEQ_MULTITHREAD) || !defined(INTP_MULTITHREAD)
+                    // Root searches usually need several evaluations per
+                    // output angle. Do not nest polynomial conversion in
+                    // the same thread pool that is running these contours.
+                    util::prepare_polynomial(boozer_geo_intp,
+                                             8 * (poloidal_grid + 1));
+#endif
                     raw_values_1d.b2j = convention.flux_direction *
                                         b2j_flux_avg /
                                         (magnetic_field_unit * length_unit);
