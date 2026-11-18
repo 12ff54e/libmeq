@@ -59,6 +59,7 @@ class MagneticEquilibrium {
                                       // is the output data dimension.
     const std::size_t poloidal_grid;
 
+    template <bool Diagnostics = true>
     MagneticEquilibrium(const GFileRawData<val_type>& gfile_data,
                         std::size_t radial_grid_num,
                         std::size_t poloidal_grid_num,
@@ -66,7 +67,8 @@ class MagneticEquilibrium {
                         val_type psi_ratio,
                         bool use_si,
                         field_1d_func_type field_1d_func,
-                        field_2d_func_type field_2d_func)
+                        field_2d_func_type field_2d_func,
+                        std::bool_constant<Diagnostics> = {})
         : radial_grid(radial_grid_num),
           radial_sample(radial_sample_num),
           poloidal_grid(poloidal_grid_num),
@@ -75,8 +77,9 @@ class MagneticEquilibrium {
           psi_delta_{},
           theta_delta_(2. * M_PI / static_cast<val_type>(poloidal_grid)),
           axis_value_{},
-          data{field_on_boozer_grid(gfile_data, field_1d_func, field_2d_func)} {
-    }
+          data{field_on_boozer_grid<Diagnostics>(gfile_data,
+                                                 field_1d_func,
+                                                 field_2d_func)} {}
 
     auto psi_delta() const { return psi_delta_; }
     auto theta_delta() const { return theta_delta_; }
@@ -97,6 +100,7 @@ class MagneticEquilibrium {
         axis_value_;
     const std::pair<data_1d_type, data_2d_type> data;
 
+    template <bool Diagnostics>
     std::pair<data_1d_type, data_2d_type> field_on_boozer_grid(
         const GFileRawData<val_type>& gfile_data,
         field_1d_func_type field_1d_func,
@@ -110,15 +114,17 @@ class MagneticEquilibrium {
 
         const auto convention = gfile_data.boozer_factors();
         const auto f_axis = convention.toroidal * gfile_data.f_pol.front();
-        std::cout << "GEQDSK COCOS " << gfile_data.cocos.index()
-                  << "; Boozer output COCOS 2.\n"
-                     "Toroidal field direction in (R,Z,phi):\n";
-        std::cout << "  Magnetic field: " << (f_axis > 0 ? '+' : '-') << '\n';
-        std::cout << "  Current: "
-                  << (convention.flux_direction > 0 ? '+' : '-') << '\n';
+        if constexpr (Diagnostics) {
+            std::cout << "GEQDSK COCOS " << gfile_data.cocos.index()
+                      << "; Boozer output COCOS 2.\n"
+                         "Toroidal field direction in (R,Z,phi):\n";
+            std::cout << "  Magnetic field: " << (f_axis > 0 ? '+' : '-')
+                      << '\n';
+            std::cout << "  Current: "
+                      << (convention.flux_direction > 0 ? '+' : '-') << '\n';
 
-        auto& timer = Timer::get_timer();
-        timer.start(" - B-Spline of poloidal flux");
+            Timer::get_timer().start(" - B-Spline of poloidal flux");
+        }
         const val_type left_bd = gfile_data.r_left;
         const val_type right_bd = gfile_data.r_left + gfile_data.dim.x();
         const val_type top_bd = gfile_data.z_mid + .5 * gfile_data.dim.y();
@@ -149,42 +155,51 @@ class MagneticEquilibrium {
 
         // check poloidal flux value at magnetic axis
         const auto psi_ma_intp = flux_function(gfile_data.magnetic_axis);
-        if (std::abs(psi_ma_intp / psi_bd_file) > 1.e-4) {
-            std::cout << "The poloidal flux of magnetic axis given in gfile "
-                         "deviates from interpolated value.\n"
-                      << "  \\psi_p in gfile: " << gfile_data.flux_magnetic_axis
-                      << "\n  \\psi_p from interpolation: "
-                      << gfile_data.flux_magnetic_axis +
-                             psi_ma_intp / convention.outward_flux
-                      << '\n';
-        } else {
-            std::cout << "The poloidal flux of magnetic axis is "
-                      << gfile_data.flux_magnetic_axis << '\n';
+        if constexpr (Diagnostics) {
+            if (std::abs(psi_ma_intp / psi_bd_file) > 1.e-4) {
+                std::cout
+                    << "The poloidal flux of magnetic axis given in gfile "
+                       "deviates from interpolated value.\n"
+                    << "  \\psi_p in gfile: " << gfile_data.flux_magnetic_axis
+                    << "\n  \\psi_p from interpolation: "
+                    << gfile_data.flux_magnetic_axis +
+                           psi_ma_intp / convention.outward_flux
+                    << '\n';
+            } else {
+                std::cout << "The poloidal flux of magnetic axis is "
+                          << gfile_data.flux_magnetic_axis << '\n';
+            }
         }
-
         auto psi_boundary_min = std::numeric_limits<val_type>::infinity();
         for (const auto& pt : gfile_data.boundary) {
             psi_boundary_min = std::min(psi_boundary_min, flux_function(pt));
         }
-        std::cout << "Outward flux span to the last closed flux surface is "
-                  << psi_bd_file << '\n'
-                  << "Minimum outward flux at boundary points is "
-                  << psi_boundary_min << '\n';
+        if constexpr (Diagnostics)
+            std::cout << "Outward flux span to the last closed flux surface is "
+                      << psi_bd_file << '\n'
+                      << "Minimum outward flux at boundary points is "
+                      << psi_boundary_min << '\n';
 
         const val_type psi_bd = psi_bd_file - psi_ma_intp;
         val_type psi_wall = psi_ratio_ * psi_bd;
         if (psi_wall > psi_boundary_min - psi_ma_intp) {
             psi_wall = psi_boundary_min - psi_ma_intp;
-            std::cout << "Interpolated flux value at boundary is too small, so "
-                         "psi_wall is set to this value.\n";
+            if constexpr (Diagnostics)
+                std::cout
+                    << "Interpolated flux value at boundary is too small, so "
+                       "psi_wall is set to this value.\n";
         }
+        if (!(std::isfinite(psi_wall) && psi_wall > 0))
+            throw std::domain_error(
+                "No positive closed flux interval about the magnetic axis.");
         psi_delta_ = psi_wall / static_cast<val_type>(radial_grid - 1);
 
 #ifdef MEQ_MULTITHREAD
         auto& thread_pool = intp::DedicatedThreadPool<void>::get_instance(4);
         std::vector<std::future<void>> tasks;
 #endif
-        timer.pause_last_and_start_next(" - Contour");
+        if constexpr (Diagnostics)
+            Timer::get_timer().pause_last_and_start_next(" - Contour");
         // contours are from \\Delta\\psi to LCFS
         std::vector<Contour<val_type>> contours(radial_sample);
         constexpr std::size_t task_size = 8;
@@ -215,7 +230,7 @@ class MagneticEquilibrium {
         for (auto& res : tasks) { res.get(); }
         tasks.clear();
 #endif
-        timer.pause_last_and_start_next(" - Boozer grid");
+        if constexpr (Diagnostics) Timer::get_timer().pause_last_and_start_next(" - Boozer grid");
 
         // safety factor, on shifted psi
         intp::InterpolationFunction1D<ORDER, val_type, val_type>
@@ -237,6 +252,13 @@ class MagneticEquilibrium {
 
         // b^2 * J used for boozer coordinate construction
         auto b2j_field = [&](Vec<2, val_type> pt, val_type psi) {
+            const auto residual = flux_function(pt) - psi_ma_intp - psi;
+            if (!(std::abs(residual) <=
+                  128 * std::numeric_limits<val_type>::epsilon() *
+                          std::max(psi_bd_file, std::abs(psi_ma_intp)) +
+                      val_type{1.e-8} * psi_bd_file))
+                throw std::domain_error(
+                    "Flux contour root did not reach the requested surface.");
             val_type dp_dr = flux_function.derivative(pt, {1, 0});
             val_type dp_dz = flux_function.derivative(pt, {0, 1});
             val_type r = pt.x();
@@ -244,8 +266,12 @@ class MagneticEquilibrium {
             val_type r2 = pt.L2_norm_square_();
             val_type f = poloidal_current_intp(psi);
 
-            return (f * f + dp_dr * dp_dr + dp_dz * dp_dz) * r2 /
-                   (r * (dp_dr * pt.x() + dp_dz * pt.y()));
+            const auto weight = (f * f + dp_dr * dp_dr + dp_dz * dp_dz) * r2 /
+                                (r * (dp_dr * pt.x() + dp_dz * pt.y()));
+            if (!(std::isfinite(weight) && weight > 0))
+                throw std::domain_error(
+                    "Flux contour has a singular or folded Boozer-angle map.");
+            return weight;
         };
 
         constexpr val_type PI2 = 2 * M_PI;
@@ -254,9 +280,14 @@ class MagneticEquilibrium {
             gfile_data.geometric_poloidal_angles};
         poloidal_angles.push_back(poloidal_angles.front() + PI2);
         // \\theta range: \\theta_0, ..., \\theta_0 + 2\\pi
+#ifdef INTP_PERIODIC_NO_DUMMY_POINT
+        const auto periodic_samples = gfile_data.boundary.size();
+#else
+        const auto periodic_samples = gfile_data.boundary.size() + 1;
+#endif
         intp::InterpolationFunctionTemplate1D<ORDER, val_type, val_type>
             poloidal_template{intp::util::get_range(poloidal_angles),
-                              poloidal_angles.size(), true};
+                              periodic_samples, true};
 
         if (std::fpclassify(poloidal_angles.front()) != FP_ZERO) {
             poloidal_angles.insert(poloidal_angles.begin(), 0);
@@ -307,7 +338,7 @@ class MagneticEquilibrium {
             const auto construct_boozer = [&, start, finish]() {
                 for (std::size_t li = start; li < finish; ++li) {
                     const val_type psi = contours[li].flux() - psi_ma_intp;
-                    const std::size_t poloidal_size = contours[li].size() + 1;
+                    const std::size_t poloidal_size = periodic_samples;
 
                     RawValues1D raw_values_1d{
                         convention.flux_direction * psi / flux_unit,
@@ -323,7 +354,7 @@ class MagneticEquilibrium {
                     rr_geo.reserve(poloidal_size);
                     zz_geo.reserve(poloidal_size);
                     for (size_t i = 0; i < poloidal_size; ++i) {
-                        const auto& pt = contours[li][i % (poloidal_size - 1)];
+                        const auto& pt = contours[li][i % contours[li].size()];
                         b2j_geo.push_back(b2j_field(pt, psi));
                         rr_geo.push_back(pt.x());
                         zz_geo.push_back(pt.y());
@@ -344,6 +375,11 @@ class MagneticEquilibrium {
                                                    poloidal_angles[i - 1],
                                                    poloidal_angles[i]));
                     }
+                    for (std::size_t k = 1; k < b2j_int.size(); ++k)
+                        if (!(std::isfinite(b2j_int[k]) &&
+                              b2j_int[k] > b2j_int[k - 1]))
+                            throw std::domain_error(
+                                "Integrated Boozer angle must increase.");
                     const auto b2j_flux_avg = b2j_int.back() / PI2;
                     for (auto& v : b2j_int) { v /= b2j_flux_avg; }
                     auto boozer_geo_intp = poloidal_template_full.interpolate(
@@ -372,6 +408,8 @@ class MagneticEquilibrium {
                         const auto rr = rr_geo_intp(theta_geo);
                         const auto zz = zz_geo_intp(theta_geo);
 
+                        if (!(rr >= left_bd && rr <= right_bd && zz >= bottom_bd && zz <= top_bd))
+                            throw std::domain_error("Interpolated flux contour leaves the GEQDSK grid.");
                         // invoke user-provided function
                         const auto field_2d_vals = field_2d_func(
                             raw_values_1d,
@@ -404,7 +442,7 @@ class MagneticEquilibrium {
 #ifdef MEQ_MULTITHREAD
         for (auto& res : tasks) { res.get(); }
 #endif
-        timer.pause();
+        if constexpr (Diagnostics) Timer::get_timer().pause();
 
         // calculate axis values
         ([&](RawValues1D r1d, RawValues2D r2d) {

@@ -47,6 +47,12 @@ foreach(test ${tests})
 endforeach(test ${tests})
 message(STATUS)
 
+# Exercise the same analytic field checks with unique periodic samples.
+add_executable(equilibrium-cocos-unique-test test/equilibrium-cocos-test.cpp)
+target_include_directories(equilibrium-cocos-unique-test PRIVATE ${PROJECT_SOURCE_DIR})
+target_compile_definitions(equilibrium-cocos-unique-test PRIVATE INTP_PERIODIC_NO_DUMMY_POINT INTP_CELL_LAYOUT)
+add_test(NAME mct-equilibrium-cocos-unique-test COMMAND equilibrium-cocos-unique-test)
+
 set(CPACK_PROJECT_NAME ${PROJECT_NAME})
 set(CPACK_PROJECT_VERSION ${PROJECT_VERSION})
 include(CPack)

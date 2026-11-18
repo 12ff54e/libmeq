@@ -42,6 +42,11 @@ The sign rules follow [Sauter and Medvedev, COCOS, Table I and Appendix C](https
 See also the [EFIT g-file conventions](https://efit-ai.gitlab.io/efit/files.html)
 and [CHEASE documentation](https://crppwww.epfl.ch/~sauter/chease/).
 
+Pass `std::false_type{}` as the final constructor argument to omit the console
+diagnostics and process-wide timer during Boozer construction. Both periodic
+endpoint conventions produce the same output grid, including its repeated
+final poloidal sample.
+
 # Spline preparation
 
 Polynomial coefficients cost time and memory to build. `prepare_polynomial`
